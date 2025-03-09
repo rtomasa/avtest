@@ -1,62 +1,22 @@
-/*  RetroArch - A frontend for libretro.
- *  Copyright (C) 2010-2014 - Hans-Kristian Arntzen
- *  Copyright (C) 2011-2017 - Daniel De Matteis
- *  Copyright (C) 2012-2015 - Michael Lelli
- *
- *  RetroArch is free software: you can redistribute it and/or modify it under the terms
- *  of the GNU General Public License as published by the Free Software Found-
- *  ation, either version 3 of the License, or (at your option) any later version.
- *
- *  RetroArch is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
- *  without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
- *  PURPOSE.  See the GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along with RetroArch.
- *  If not, see <http://www.gnu.org/licenses/>.
- */
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include "libretro.h"
-#include "internal_cores.h"
-#include <SDL2/SDL_image.h>
 #include <math.h>
+#include <stdio.h>
+
+#include "libretro.h"
+#include "images.h"
 
 #define FRAME_BUF_WIDTH 320
 #define FRAME_BUF_HEIGHT_NTSC 240
 #define FRAME_BUF_HEIGHT_PAL 288
 
-static uint16_t *frame_buf;
+static uint32_t *frame_buf;
 static bool is_50hz = false;
 static bool prev_a_pressed = false;
 static bool prev_b_pressed = false;
-
-void retro_init(void) { lr_retro_init(); }
-void retro_deinit(void) { lr_retro_deinit(); }
-unsigned retro_api_version(void) { return lr_retro_api_version(); }
-void retro_set_controller_port_device(unsigned port, unsigned device) { lr_retro_set_controller_port_device(port, device); }
-void retro_get_system_info(struct retro_system_info *info) { lr_retro_get_system_info(info); }
-void retro_get_system_av_info(struct retro_system_av_info *info) { lr_retro_get_system_av_info(info); }
-void retro_set_environment(retro_environment_t cb) { lr_retro_set_environment(cb); }
-void retro_set_audio_sample(retro_audio_sample_t cb) { lr_retro_set_audio_sample(cb); }
-void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { lr_retro_set_audio_sample_batch(cb); }
-void retro_set_input_poll(retro_input_poll_t cb) { lr_retro_set_input_poll(cb); }
-void retro_set_input_state(retro_input_state_t cb) { lr_retro_set_input_state(cb); }
-void retro_set_video_refresh(retro_video_refresh_t cb) { lr_retro_set_video_refresh(cb); }
-void retro_reset(void) { lr_retro_reset(); }
-void retro_run(void) { lr_retro_run(); }
-bool retro_load_game(const struct retro_game_info *info) { return lr_retro_load_game(info); }
-void retro_unload_game(void) { lr_retro_unload_game(); }
-unsigned retro_get_region(void) { return lr_retro_get_region(); }
-bool retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num) { return lr_retro_load_game_special(type, info, num); }
-size_t retro_serialize_size(void) { return lr_retro_serialize_size(); }
-bool retro_serialize(void *data, size_t size) { return lr_retro_serialize(data, size); }
-bool retro_unserialize(const void *data, size_t size) { return lr_retro_unserialize(data, size); }
-void *retro_get_memory_data(unsigned id) { return lr_retro_get_memory_data(id); }
-size_t retro_get_memory_size(unsigned id) { return lr_retro_get_memory_size(id); }
-void retro_cheat_reset(void) { lr_retro_cheat_reset(); }
-void retro_cheat_set(unsigned idx, bool enabled, const char *code) { lr_retro_cheat_set(idx, enabled, code); }
+char retro_base_directory[4096];
+char retro_game_path[4096];
 
 static retro_video_refresh_t video_cb;
 static retro_audio_sample_t audio_cb;
@@ -66,187 +26,36 @@ static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 static retro_log_printf_t log_cb;
 
-static struct retro_variable variables[] = {
-    {NULL, NULL}, // This indicates the end of variables
-};
-
-static void convert_to_rgb565(SDL_Surface *surface, uint16_t *buffer)
+void load_bg(bool is_50) 
 {
-   int x, y;
-   uint8_t *pixel;
-   Uint8 r, g, b;
+   const uint8_t *data = is_50 ? grid_50_bin : grid_60_bin;
+   const unsigned width = FRAME_BUF_WIDTH;
+   const unsigned height = is_50 ? FRAME_BUF_HEIGHT_PAL : FRAME_BUF_HEIGHT_NTSC;
 
-   for (y = 0; y < surface->h; y++)
-   {
-      for (x = 0; x < surface->w; x++)
-      {
-         pixel = (uint8_t *)surface->pixels + y * surface->pitch + x * surface->format->BytesPerPixel;
-         SDL_GetRGB(*((uint32_t *)pixel), surface->format, &r, &g, &b);
+   frame_buf = malloc(width * height * sizeof(uint32_t));
 
-         /* Now we need to convert to RGB565 format */
-         r = r >> 3;
-         g = g >> 2;
-         b = b >> 3;
-
-         buffer[y * surface->w + x] = (r << 11) | (g << 5) | b;
-      }
+   for(unsigned i = 0; i < width * height; i++) {
+      uint8_t r = data[i*3 + 0];
+      uint8_t g = data[i*3 + 1];
+      uint8_t b = data[i*3 + 2];
+      frame_buf[i] = (r << 16) | (g << 8) | b;
    }
 }
 
-static void load_bg(bool is_50)
+static void check_variables(void)
 {
-   const char* image;
-   if (is_50)
-   {
-      image = "./images/grid_50.png";
-      frame_buf = (uint16_t *)calloc(FRAME_BUF_WIDTH * FRAME_BUF_HEIGHT_PAL, sizeof(uint16_t));
-      for (unsigned i = 0; i < (unsigned)(FRAME_BUF_WIDTH * FRAME_BUF_HEIGHT_PAL); i++)
-         frame_buf[i] = 4 << 5;
-   }
-   else
-   {
-      image = "./images/grid_60.png";
-      frame_buf = (uint16_t *)calloc(FRAME_BUF_WIDTH * FRAME_BUF_HEIGHT_NTSC, sizeof(uint16_t));
-      for (unsigned i = 0; i < (unsigned)(FRAME_BUF_WIDTH * FRAME_BUF_HEIGHT_NTSC); i++)
-         frame_buf[i] = 4 << 5;
-   }
+   log_cb(RETRO_LOG_INFO, "Variable updated\n");
 
-   SDL_Surface *bg_img = IMG_Load(image);
-
-   convert_to_rgb565(bg_img, frame_buf);
-   SDL_FreeSurface(bg_img);
-}
-
-void lr_retro_init(void)
-{
+   free(frame_buf);
    load_bg(false);
+
+   struct retro_system_av_info av_info;
+   retro_get_system_av_info(&av_info);
+   environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
 }
 
-void lr_retro_deinit(void)
+static void update_input(void)
 {
-   if (frame_buf)
-      free(frame_buf);
-   frame_buf = NULL;
-}
-
-unsigned lr_retro_api_version(void)
-{
-   return RETRO_API_VERSION;
-}
-
-void lr_retro_set_controller_port_device(unsigned port, unsigned device)
-{
-   (void)port;
-   (void)device;
-}
-
-void lr_retro_get_system_info(struct retro_system_info *info)
-{
-   memset(info, 0, sizeof(*info));
-   info->library_name = "RePlay Screen Test";
-   info->library_version = "v1.0";
-   info->need_fullpath = false;
-   info->valid_extensions = "n/a"; /* Nothing. */
-}
-
-void lr_retro_get_system_av_info(struct retro_system_av_info *info)
-{
-   if (is_50hz)
-   {
-      info->timing.fps = 50.0;
-      info->geometry.base_height = FRAME_BUF_HEIGHT_PAL;
-      info->geometry.max_height = FRAME_BUF_HEIGHT_PAL;
-      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_PAL;
-   }
-   else
-   {
-      info->timing.fps = 60.0;
-      info->geometry.base_height = FRAME_BUF_HEIGHT_NTSC;
-      info->geometry.max_height = FRAME_BUF_HEIGHT_NTSC;
-      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_NTSC;
-   }
-   info->timing.sample_rate = 48000.0;
-   info->geometry.base_width = FRAME_BUF_WIDTH;
-   info->geometry.max_width = FRAME_BUF_WIDTH;   
-}
-
-void lr_retro_set_environment(retro_environment_t cb)
-{
-   enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_RGB565;
-
-   environ_cb = cb;
-
-   struct retro_log_callback logging;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
-   {
-      log_cb = logging.log;
-   }
-
-   environ_cb(RETRO_ENVIRONMENT_SET_VARIABLES, variables);
-
-   /* We know it's supported, it's internal to RetroArch. */
-   environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
-}
-
-const char *lr_retro_get_environment(const char *key)
-{
-   struct retro_variable var = {0};
-
-   var.key = key;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
-   {
-      return var.value;
-   }
-
-   return NULL; // Return NULL if the key wasn't found or there was another error
-}
-
-void lr_retro_set_audio_sample(retro_audio_sample_t cb)
-{
-   audio_cb = cb;
-}
-
-void lr_retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
-{
-   audio_batch_cb = cb;
-}
-
-void lr_retro_set_input_poll(retro_input_poll_t cb)
-{
-   input_poll_cb = cb;
-}
-
-void lr_retro_set_input_state(retro_input_state_t cb)
-{
-   input_state_cb = cb;
-}
-
-void lr_retro_set_video_refresh(retro_video_refresh_t cb)
-{
-   video_cb = cb;
-}
-
-void lr_retro_reset(void)
-{
-}
-
-void lr_retro_run(void)
-{
-   bool updated = false;
-   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated)
-   {
-      log_cb(RETRO_LOG_INFO, "Variable updated\n");
-
-      free(frame_buf);
-      load_bg(false);
-
-      struct retro_system_av_info av_info;
-      lr_retro_get_system_av_info(&av_info);
-      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
-   }
-
-   input_poll_cb();
-
    // Check if A or B button are pressed
    int16_t input_a = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A);
    int16_t input_b = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
@@ -255,7 +64,7 @@ void lr_retro_run(void)
    {
       // Button was just pressed, toggle the FPS
       struct retro_system_av_info av_info;
-      lr_retro_get_system_av_info(&av_info);
+      retro_get_system_av_info(&av_info);
 
       if (!is_50hz)
       {
@@ -283,30 +92,176 @@ void lr_retro_run(void)
    // Update the previous state of the A and B buttons
    prev_a_pressed = input_a != 0;
    prev_b_pressed = input_b != 0;
+}
+
+void retro_init(void)
+{
+   load_bg(false);
+
+   const char *dir = NULL;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir)
+   {
+      snprintf(retro_base_directory, sizeof(retro_base_directory), "%s", dir);
+   }
+}
+
+void retro_deinit(void)
+{
+   free(frame_buf);
+   frame_buf = NULL;
+   is_50hz = false;
+   prev_a_pressed = false;
+   prev_b_pressed = false;
+}
+
+unsigned retro_api_version(void)
+{
+   return RETRO_API_VERSION;
+}
+
+void retro_set_controller_port_device(unsigned port, unsigned device)
+{
+   log_cb(RETRO_LOG_INFO, "Plugging device %u into port %u.\n", device, port);
+}
+
+void retro_get_system_info(struct retro_system_info *info)
+{
+   memset(info, 0, sizeof(*info));
+   info->library_name = "Screen Test";
+   info->library_version = "1.0";
+   info->need_fullpath = true;
+   info->valid_extensions = "";
+}
+
+void retro_get_system_av_info(struct retro_system_av_info *info)
+{
+   info->timing.sample_rate = 48000.0f;
 
    if (is_50hz)
-      video_cb(frame_buf, FRAME_BUF_WIDTH, FRAME_BUF_HEIGHT_PAL, 2 * FRAME_BUF_WIDTH);
+   {
+      info->timing.fps = 50.0;
+      info->geometry.base_width = FRAME_BUF_WIDTH;
+      info->geometry.base_height = FRAME_BUF_HEIGHT_PAL;
+      info->geometry.max_width = FRAME_BUF_WIDTH;
+      info->geometry.max_height = FRAME_BUF_HEIGHT_PAL;
+      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_PAL;
+   }
    else
-      video_cb(frame_buf, FRAME_BUF_WIDTH, FRAME_BUF_HEIGHT_NTSC, 2 * FRAME_BUF_WIDTH);
+   {
+      info->timing.fps = 60.0;
+      info->geometry.base_width = FRAME_BUF_WIDTH;
+      info->geometry.base_height = FRAME_BUF_HEIGHT_NTSC;
+      info->geometry.max_width = FRAME_BUF_WIDTH;
+      info->geometry.max_height = FRAME_BUF_HEIGHT_NTSC;
+      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_NTSC;
+   }
 }
 
-/* This should never be called, it's only used as a placeholder. */
-bool lr_retro_load_game(const struct retro_game_info *info)
+void retro_set_environment(retro_environment_t cb)
 {
+   environ_cb = cb;
+
+   struct retro_log_callback logging;
+   if (environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &logging))
+   {
+      log_cb = logging.log;
+   }
+
+   static const struct retro_controller_description controllers[] = {
+      { "Retropad", RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_JOYPAD, 0) },
+   };
+
+   static const struct retro_controller_info ports[] = {
+      { controllers, 1 },
+      { NULL, 0 },
+   };
+
+   cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
+}
+
+void retro_set_audio_sample(retro_audio_sample_t cb)
+{
+   audio_cb = cb;
+}
+
+void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
+{
+   audio_batch_cb = cb;
+}
+
+void retro_set_input_poll(retro_input_poll_t cb)
+{
+   input_poll_cb = cb;
+}
+
+void retro_set_input_state(retro_input_state_t cb)
+{
+   input_state_cb = cb;
+}
+
+void retro_set_video_refresh(retro_video_refresh_t cb)
+{
+   video_cb = cb;
+}
+
+void retro_reset(void)
+{
+}
+
+void retro_run(void)
+{
+   update_input();
+
+   bool updated = false;
+
+   if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
+      check_variables();
+   }
+
+   unsigned pitch = FRAME_BUF_WIDTH * sizeof(uint32_t); // 4 bytes per pixel
+
+   if (is_50hz)
+      video_cb(frame_buf, FRAME_BUF_WIDTH, FRAME_BUF_HEIGHT_PAL, pitch);
+   else
+      video_cb(frame_buf, FRAME_BUF_WIDTH, FRAME_BUF_HEIGHT_NTSC, pitch);
+}
+
+bool retro_load_game(const struct retro_game_info *info)
+{
+   static struct retro_input_descriptor desc[] = {
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "A - Switch 50/60Hz" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "B - Switch 50/60Hz" },
+      { 0 },
+   };
+
+   environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
+
+   enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
+   if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt))
+   {
+      log_cb(RETRO_LOG_INFO, "XRGB8888 is not supported.\n");
+      return false;
+   }
+
+   snprintf(retro_game_path, sizeof(retro_game_path), "%s", info->path);
+
+   struct retro_audio_callback audio_cb = { NULL, NULL };
+   environ_cb(RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK, &audio_cb);
+
    (void)info;
-   return false;
+   return true;
 }
 
-void lr_retro_unload_game(void)
+void retro_unload_game(void)
 {
 }
 
-unsigned lr_retro_get_region(void)
+unsigned retro_get_region(void)
 {
    return RETRO_REGION_NTSC;
 }
 
-bool lr_retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num)
+bool retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num)
 {
    (void)type;
    (void)info;
@@ -314,42 +269,42 @@ bool lr_retro_load_game_special(unsigned type, const struct retro_game_info *inf
    return false;
 }
 
-size_t lr_retro_serialize_size(void)
+size_t retro_serialize_size(void)
 {
    return 0;
 }
 
-bool lr_retro_serialize(void *data, size_t size)
+bool retro_serialize(void *data, size_t size)
 {
    (void)data;
    (void)size;
    return false;
 }
 
-bool lr_retro_unserialize(const void *data, size_t size)
+bool retro_unserialize(const void *data, size_t size)
 {
    (void)data;
    (void)size;
    return false;
 }
 
-void *lr_retro_get_memory_data(unsigned id)
+void *retro_get_memory_data(unsigned id)
 {
    (void)id;
    return NULL;
 }
 
-size_t lr_retro_get_memory_size(unsigned id)
+size_t retro_get_memory_size(unsigned id)
 {
    (void)id;
    return 0;
 }
 
-void lr_retro_cheat_reset(void)
+void retro_cheat_reset(void)
 {
 }
 
-void lr_retro_cheat_set(unsigned idx, bool enabled, const char *code)
+void retro_cheat_set(unsigned idx, bool enabled, const char *code)
 {
    (void)idx;
    (void)enabled;
