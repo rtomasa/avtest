@@ -8,13 +8,13 @@ DEBUG := 0
 
 # Adjust compiler flags based on debug mode
 ifeq ($(DEBUG), 1)
-   	CFLAGS := -fPIC -Wall -Wextra -O0 -g -DDEBUG -march=armv8-a `sdl2-config --cflags`
+   	CFLAGS := -fPIC -Wall -Wextra -O0 -g -DDEBUG -march=armv8-a
 else
-	CFLAGS := -fPIC -O3 -march=armv8-a -ftree-vectorize -fomit-frame-pointer -pipe `sdl2-config --cflags`
+	CFLAGS := -fPIC -O3 -march=armv8-a -ftree-vectorize -fomit-frame-pointer -pipe
 endif
 
 # Flags for linking
-LDFLAGS := -shared `sdl2-config --libs` -lSDL2_gfx
+LDFLAGS := -shared
 
 # Source and build directories
 SRC_DIR := .
