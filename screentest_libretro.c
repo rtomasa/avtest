@@ -10,6 +10,7 @@
 #define FRAME_BUF_WIDTH 320
 #define FRAME_BUF_HEIGHT_NTSC 240
 #define FRAME_BUF_HEIGHT_PAL 288
+#define FRAME_BUF_MAX_HEIGHT FRAME_BUF_HEIGHT_PAL
 
 static uint32_t *frame_buf;
 static bool is_50hz = false;
@@ -28,11 +29,13 @@ static retro_log_printf_t log_cb;
 
 void load_bg(bool is_50) 
 {
+   free(frame_buf);
+
    const uint8_t *data = is_50 ? grid_50_bin : grid_60_bin;
    const unsigned width = FRAME_BUF_WIDTH;
    const unsigned height = is_50 ? FRAME_BUF_HEIGHT_PAL : FRAME_BUF_HEIGHT_NTSC;
 
-   frame_buf = malloc(width * height * sizeof(uint32_t));
+   frame_buf = malloc(width * FRAME_BUF_MAX_HEIGHT * sizeof(uint32_t));
 
    for(unsigned i = 0; i < width * height; i++) {
       uint8_t r = data[i*3 + 0];
@@ -40,6 +43,32 @@ void load_bg(bool is_50)
       uint8_t b = data[i*3 + 2];
       frame_buf[i] = (r << 16) | (g << 8) | b;
    }
+}
+
+/* Tell the frontend each time you toggle */
+static void push_geometry(void)
+{
+    struct retro_game_geometry geom = {
+        FRAME_BUF_WIDTH,
+        is_50hz ? FRAME_BUF_HEIGHT_PAL : FRAME_BUF_HEIGHT_NTSC,
+        FRAME_BUF_WIDTH,
+        FRAME_BUF_MAX_HEIGHT,          /* still 288 */
+        (float)FRAME_BUF_WIDTH /
+        (float)(is_50hz ? FRAME_BUF_HEIGHT_PAL : FRAME_BUF_HEIGHT_NTSC)
+    };
+    environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &geom);
+}
+
+static void toggle_video_mode(void)
+{
+    is_50hz = !is_50hz;
+    push_geometry();                   /* ① resize agreement          */
+
+    struct retro_system_av_info av;
+    retro_get_system_av_info(&av);     /* ② (optional) real refresh   */
+    environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
+
+    load_bg(is_50hz);                  /* ③ redraw                    */
 }
 
 static void check_variables(void)
@@ -61,33 +90,7 @@ static void update_input(void)
    int16_t input_b = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B);
 
    if ((input_a && !prev_a_pressed) || (input_b && !prev_b_pressed))
-   {
-      // Button was just pressed, toggle the FPS
-      struct retro_system_av_info av_info;
-      retro_get_system_av_info(&av_info);
-
-      if (!is_50hz)
-      {
-         av_info.timing.fps = 50.0;
-         av_info.geometry.base_height = FRAME_BUF_HEIGHT_PAL;
-         av_info.geometry.max_height = FRAME_BUF_HEIGHT_PAL;
-         av_info.geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_PAL;
-         is_50hz = true;
-         log_cb(RETRO_LOG_INFO, "Switched to 50 Hz\n");
-      }
-      else
-      {
-         av_info.timing.fps = 60.0;
-         av_info.geometry.base_height = FRAME_BUF_HEIGHT_NTSC;
-         av_info.geometry.max_height = FRAME_BUF_HEIGHT_NTSC;
-         av_info.geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_NTSC;
-         is_50hz = false;
-         log_cb(RETRO_LOG_INFO, "Switched to 60 Hz\n");
-      }
-      load_bg(is_50hz);
-
-      environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av_info);
-   }
+      toggle_video_mode();
 
    // Update the previous state of the A and B buttons
    prev_a_pressed = input_a != 0;
@@ -97,6 +100,7 @@ static void update_input(void)
 void retro_init(void)
 {
    load_bg(false);
+   push_geometry();
 
    const char *dir = NULL;
    if (environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &dir) && dir)
@@ -135,26 +139,16 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
-   info->timing.sample_rate = 48000.0f;
+    info->timing.sample_rate = 48000.0f;
+    info->timing.fps         = is_50hz ? 50.0f : 60.0f;
 
-   if (is_50hz)
-   {
-      info->timing.fps = 50.0;
-      info->geometry.base_width = FRAME_BUF_WIDTH;
-      info->geometry.base_height = FRAME_BUF_HEIGHT_PAL;
-      info->geometry.max_width = FRAME_BUF_WIDTH;
-      info->geometry.max_height = FRAME_BUF_HEIGHT_PAL;
-      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_PAL;
-   }
-   else
-   {
-      info->timing.fps = 60.0;
-      info->geometry.base_width = FRAME_BUF_WIDTH;
-      info->geometry.base_height = FRAME_BUF_HEIGHT_NTSC;
-      info->geometry.max_width = FRAME_BUF_WIDTH;
-      info->geometry.max_height = FRAME_BUF_HEIGHT_NTSC;
-      info->geometry.aspect_ratio = (float)FRAME_BUF_WIDTH / (float)FRAME_BUF_HEIGHT_NTSC;
-   }
+    info->geometry.base_width   = FRAME_BUF_WIDTH;
+    info->geometry.base_height  = is_50hz ? FRAME_BUF_HEIGHT_PAL   /* 288 */
+                                          : FRAME_BUF_HEIGHT_NTSC; /* 240 */
+    info->geometry.max_width    = FRAME_BUF_WIDTH;
+    info->geometry.max_height   = FRAME_BUF_MAX_HEIGHT;            /* **288** no matter what */
+    info->geometry.aspect_ratio = (float)info->geometry.base_width /
+                                  (float)info->geometry.base_height;
 }
 
 void retro_set_environment(retro_environment_t cb)
