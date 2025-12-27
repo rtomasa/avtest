@@ -21,10 +21,10 @@ SRC_DIR := .
 BUILD_DIR := .
 
 # Source file
-SRC := $(SRC_DIR)/screentest_libretro.c
+SRC := $(SRC_DIR)/avtest_libretro.c $(SRC_DIR)/audio_data.c
 
 # Output file
-OUT := $(BUILD_DIR)/screentest_libretro.so
+OUT := $(BUILD_DIR)/avtest_libretro.so
 
 # Default target
 all: $(OUT)
@@ -32,7 +32,7 @@ all: $(OUT)
 # Target for building the output
 $(OUT): $(SRC)
 	@mkdir -p $(BUILD_DIR)
-	$(CC) $(CFLAGS) $< $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $(SRC) $(LDFLAGS) -o $@
 
 # Target for cleaning the build directory
 clean:
