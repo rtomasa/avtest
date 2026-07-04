@@ -12,6 +12,8 @@
 #define FRAME_BUF_HEIGHT_NTSC 240
 #define FRAME_BUF_HEIGHT_PAL 288
 #define FRAME_BUF_MAX_HEIGHT FRAME_BUF_HEIGHT_PAL
+#define REFRESH_RATE_PAL 50.0
+#define REFRESH_RATE_NTSC (60000.0 / 1001.0)
 
 static uint32_t *frame_buf;
 static bool is_50hz = false;
@@ -35,6 +37,16 @@ static retro_environment_t environ_cb;
 static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 static retro_log_printf_t log_cb;
+
+static double current_refresh_rate(void)
+{
+   return is_50hz ? REFRESH_RATE_PAL : REFRESH_RATE_NTSC;
+}
+
+static unsigned current_region(void)
+{
+   return is_50hz ? RETRO_REGION_PAL : RETRO_REGION_NTSC;
+}
 
 struct wav_data {
    const uint8_t *pcm;
@@ -217,7 +229,7 @@ static void audio_init(void)
    if (audio_sample_rate <= 0.0)
       audio_sample_rate = 48000.0;
 
-   size_t max_frames = (size_t)(audio_sample_rate / 50.0) + 2;
+   size_t max_frames = (size_t)(audio_sample_rate / REFRESH_RATE_PAL) + 2;
    ensure_audio_buffer(max_frames);
    audio_reset_positions();
 }
@@ -312,7 +324,7 @@ static void render_audio(void)
    if (!audio_batch_cb && !audio_cb)
       return;
 
-   double fps = is_50hz ? 50.0 : 60.0;
+   double fps = current_refresh_rate();
    if (fps <= 0.0 || audio_sample_rate <= 0.0)
       return;
 
@@ -374,12 +386,12 @@ static void toggle_video_mode(void)
 {
     is_50hz = !is_50hz;
     audio_frame_accum = 0.0;
-    push_geometry();                   /* ① resize agreement          */
 
     struct retro_system_av_info av;
-    retro_get_system_av_info(&av);     /* ② (optional) real refresh   */
+    retro_get_system_av_info(&av);     /* ① geometry + real refresh   */
     environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &av);
 
+    push_geometry();                   /* ② resize agreement          */
     load_bg(is_50hz);                  /* ③ redraw                    */
 }
 
@@ -476,7 +488,7 @@ void retro_get_system_info(struct retro_system_info *info)
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
     info->timing.sample_rate = (float)audio_sample_rate;
-    info->timing.fps         = is_50hz ? 50.0f : 60.0f;
+    info->timing.fps         = current_refresh_rate();
 
     info->geometry.base_width   = FRAME_BUF_WIDTH;
     info->geometry.base_height  = is_50hz ? FRAME_BUF_HEIGHT_PAL   /* 288 */
@@ -561,8 +573,8 @@ void retro_run(void)
 bool retro_load_game(const struct retro_game_info *info)
 {
    static struct retro_input_descriptor desc[] = {
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "A - Switch 50/60Hz" },
-      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "B - Switch 50/60Hz" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A, "A - Switch PAL/NTSC" },
+      { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B, "B - Switch PAL/NTSC" },
       { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START, "Start - Pause/Resume Audio" },
       { 0 },
    };
@@ -591,7 +603,7 @@ void retro_unload_game(void)
 
 unsigned retro_get_region(void)
 {
-   return RETRO_REGION_NTSC;
+   return current_region();
 }
 
 bool retro_load_game_special(unsigned type, const struct retro_game_info *info, size_t num)
